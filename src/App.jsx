@@ -159,7 +159,7 @@ function Dashboard() {
 }
 
 function generateAccessCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no O/0/I/1 to avoid confusion
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
   for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)]
   return code
@@ -227,10 +227,23 @@ function KidDetail({ kid, onBack }) {
   const [balance, setBalance] = useState(kid.balance)
   const [loading, setLoading] = useState(true)
 
+  const [editingRate, setEditingRate] = useState(false)
+  const [newRate, setNewRate] = useState(String(kid.interest_rate))
+  const [currentRate, setCurrentRate] = useState(kid.interest_rate)
+
+  const [editingTxId, setEditingTxId] = useState(null)
+  const [editTxKind, setEditTxKind] = useState('deposit')
+  const [editTxAmount, setEditTxAmount] = useState('')
+  const [editTxNote, setEditTxNote] = useState('')
+
   async function refresh() {
     setLoading(true)
     const { data: k } = await supabase.from('kids').select('*').eq('id', kid.id).single()
-    if (k) setBalance(k.balance)
+    if (k) {
+      setBalance(k.balance)
+      setCurrentRate(k.interest_rate)
+      setNewRate(String(k.interest_rate))
+    }
     const { data: txs } = await supabase
       .from('transactions')
       .select('*')
@@ -250,13 +263,42 @@ function KidDetail({ kid, onBack }) {
   }
 
   async function applyMonthlyInterest() {
-    const monthlyInterest = (balance * (kid.interest_rate / 100)) / 12
+    const monthlyInterest = (balance * (currentRate / 100)) / 12
     if (monthlyInterest <= 0) return
-    await addTransaction(
-      Number(monthlyInterest.toFixed(2)),
-      'Monthly interest',
-      'interest'
-    )
+    await addTransaction(Number(monthlyInterest.toFixed(2)), 'Monthly interest', 'interest')
+  }
+
+  async function saveInterestRate(e) {
+    e.preventDefault()
+    await supabase.from('kids').update({ interest_rate: Number(newRate) }).eq('id', kid.id)
+    setCurrentRate(Number(newRate))
+    setEditingRate(false)
+  }
+
+  function startEditTx(tx) {
+    setEditingTxId(tx.id)
+    setEditTxKind(Number(tx.amount) >= 0 ? 'deposit' : 'withdrawal')
+    setEditTxAmount(String(Math.abs(Number(tx.amount))))
+    setEditTxNote(tx.note || '')
+  }
+
+  async function saveEditTx(e, tx) {
+    e.preventDefault()
+    const newAmount = editTxKind === 'deposit'
+      ? Math.abs(Number(editTxAmount))
+      : -Math.abs(Number(editTxAmount))
+    const diff = newAmount - Number(tx.amount)
+    await supabase.from('transactions').update({ amount: newAmount, note: editTxNote }).eq('id', tx.id)
+    await supabase.from('kids').update({ balance: Number(balance) + diff }).eq('id', kid.id)
+    setEditingTxId(null)
+    refresh()
+  }
+
+  async function deleteTx(tx) {
+    if (!window.confirm('Delete this transaction?')) return
+    await supabase.from('transactions').delete().eq('id', tx.id)
+    await supabase.from('kids').update({ balance: Number(balance) - Number(tx.amount) }).eq('id', kid.id)
+    refresh()
   }
 
   return (
@@ -266,7 +308,31 @@ function KidDetail({ kid, onBack }) {
       </button>
       <h2>{kid.name}</h2>
       <div className="big-balance">${Number(balance).toFixed(2)}</div>
-      <p className="muted">{kid.interest_rate}% annual interest</p>
+
+      {editingRate ? (
+        <form onSubmit={saveInterestRate} className="rate-edit-form">
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            value={newRate}
+            onChange={(e) => setNewRate(e.target.value)}
+            style={{ width: '80px' }}
+          />
+          <span>% annual interest</span>
+          <button type="submit" className="inline-btn">Save</button>
+          <button type="button" className="inline-btn secondary" onClick={() => { setEditingRate(false); setNewRate(String(currentRate)) }}>
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <p className="muted">
+          {currentRate}% annual interest{' '}
+          <button className="edit-inline-btn" onClick={() => setEditingRate(true)}>
+            Edit
+          </button>
+        </p>
+      )}
 
       <div className="row">
         <button onClick={applyMonthlyInterest}>Apply monthly interest</button>
@@ -281,16 +347,59 @@ function KidDetail({ kid, onBack }) {
         <p className="muted">No transactions yet.</p>
       ) : (
         <ul className="tx-list">
-          {transactions.map((tx) => (
-            <li key={tx.id} className="tx-row">
-              <span className={tx.amount >= 0 ? 'amount pos' : 'amount neg'}>
-                {tx.amount >= 0 ? '+' : ''}
-                {Number(tx.amount).toFixed(2)}
-              </span>
-              <span className="tx-note">{tx.note || (tx.type === 'interest' ? 'Interest' : '')}</span>
-              <span className="tx-date">{new Date(tx.created_at).toLocaleDateString()}</span>
-            </li>
-          ))}
+          {transactions.map((tx) =>
+            editingTxId === tx.id ? (
+              <li key={tx.id} className="tx-row tx-edit-row">
+                <form onSubmit={(e) => saveEditTx(e, tx)} className="tx-inline-form">
+                  <div className="row" style={{ gap: '12px', flexWrap: 'wrap' }}>
+                    <label className="radio">
+                      <input type="radio" checked={editTxKind === 'deposit'} onChange={() => setEditTxKind('deposit')} />
+                      Deposit
+                    </label>
+                    <label className="radio">
+                      <input type="radio" checked={editTxKind === 'withdrawal'} onChange={() => setEditTxKind('withdrawal')} />
+                      Withdrawal
+                    </label>
+                  </div>
+                  <div className="row" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={editTxAmount}
+                      onChange={(e) => setEditTxAmount(e.target.value)}
+                      required
+                      style={{ width: '100px' }}
+                      placeholder="Amount"
+                    />
+                    <input
+                      value={editTxNote}
+                      onChange={(e) => setEditTxNote(e.target.value)}
+                      placeholder="Note (optional)"
+                      style={{ flex: 1, minWidth: '120px' }}
+                    />
+                    <button type="submit" className="inline-btn">Save</button>
+                    <button type="button" className="inline-btn secondary" onClick={() => setEditingTxId(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </li>
+            ) : (
+              <li key={tx.id} className="tx-row">
+                <span className={Number(tx.amount) >= 0 ? 'amount pos' : 'amount neg'}>
+                  {Number(tx.amount) >= 0 ? '+' : ''}
+                  {Number(tx.amount).toFixed(2)}
+                </span>
+                <span className="tx-note">{tx.note || (tx.type === 'interest' ? 'Interest' : '')}</span>
+                <span className="tx-date">{new Date(tx.created_at).toLocaleDateString()}</span>
+                <span className="tx-actions">
+                  <button className="edit-inline-btn" onClick={() => startEditTx(tx)}>Edit</button>
+                  <button className="edit-inline-btn danger" onClick={() => deleteTx(tx)}>Delete</button>
+                </span>
+              </li>
+            )
+          )}
         </ul>
       )}
     </div>
@@ -331,7 +440,6 @@ function KidView({ onBack }) {
         <h2>{data.name}'s account</h2>
         <div className="big-balance">${Number(data.balance).toFixed(2)}</div>
         <p className="muted">{data.interest_rate}% annual interest · view only</p>
-
         <h3>History</h3>
         {data.transactions.length === 0 ? (
           <p className="muted">No transactions yet.</p>
@@ -397,19 +505,11 @@ function TransactionForm({ onSubmit }) {
     <form onSubmit={handleSubmit} className="card form tx-form">
       <div className="row">
         <label className="radio">
-          <input
-            type="radio"
-            checked={kind === 'deposit'}
-            onChange={() => setKind('deposit')}
-          />
+          <input type="radio" checked={kind === 'deposit'} onChange={() => setKind('deposit')} />
           Deposit
         </label>
         <label className="radio">
-          <input
-            type="radio"
-            checked={kind === 'withdrawal'}
-            onChange={() => setKind('withdrawal')}
-          />
+          <input type="radio" checked={kind === 'withdrawal'} onChange={() => setKind('withdrawal')} />
           Withdrawal
         </label>
       </div>
