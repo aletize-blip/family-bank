@@ -16,7 +16,7 @@ export default function App() {
     return () => listener.subscription.unsubscribe()
   }, [])
 
-  const [mode, setMode] = useState(null) // null | 'parent' | 'kid'
+  const [mode, setMode] = useState(null)
 
   if (loading) return <div className="center">Loading…</div>
 
@@ -55,7 +55,7 @@ function ModeSelect({ onSelect }) {
 function Auth({ onBack }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [mode, setMode] = useState('signin') // 'signin' | 'signup'
+  const [mode, setMode] = useState('signin')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
 
@@ -158,22 +158,25 @@ function Dashboard() {
   )
 }
 
-function generateAccessCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  let code = ''
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)]
-  return code
+function normalizeCode(val) {
+  return val.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
 }
 
 function AddKid({ onAdded }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [rate, setRate] = useState('0')
+  const [code, setCode] = useState('')
   const [error, setError] = useState('')
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    const trimmedCode = code.trim().toUpperCase()
+    if (!trimmedCode) {
+      setError('Please enter a view code.')
+      return
+    }
     const {
       data: { user },
     } = await supabase.auth.getUser()
@@ -181,14 +184,15 @@ function AddKid({ onAdded }) {
       name,
       interest_rate: Number(rate) || 0,
       parent_id: user.id,
-      kid_access_code: generateAccessCode(),
+      kid_access_code: trimmedCode,
     })
     if (error) {
-      setError(error.message)
+      setError(error.message.includes('unique') ? 'That code is already in use. Choose a different one.' : error.message)
       return
     }
     setName('')
     setRate('0')
+    setCode('')
     setOpen(false)
     onAdded()
   }
@@ -211,6 +215,17 @@ function AddKid({ onAdded }) {
         Annual interest rate (%)
         <input type="number" step="0.1" value={rate} onChange={(e) => setRate(e.target.value)} />
       </label>
+      <label>
+        View code{' '}
+        <span style={{ fontWeight: 400, color: '#888' }}>(letters &amp; numbers, what your kid types to log in)</span>
+        <input
+          value={code}
+          onChange={(e) => setCode(normalizeCode(e.target.value))}
+          placeholder="e.g. EMMA or 1234"
+          required
+          autoCapitalize="characters"
+        />
+      </label>
       {error && <p className="error">{error}</p>}
       <div className="row">
         <button type="submit">Create account</button>
@@ -231,6 +246,11 @@ function KidDetail({ kid, onBack }) {
   const [newRate, setNewRate] = useState(String(kid.interest_rate))
   const [currentRate, setCurrentRate] = useState(kid.interest_rate)
 
+  const [editingCode, setEditingCode] = useState(false)
+  const [newCode, setNewCode] = useState(kid.kid_access_code || '')
+  const [currentCode, setCurrentCode] = useState(kid.kid_access_code || '')
+  const [codeError, setCodeError] = useState('')
+
   const [editingTxId, setEditingTxId] = useState(null)
   const [editTxKind, setEditTxKind] = useState('deposit')
   const [editTxAmount, setEditTxAmount] = useState('')
@@ -243,6 +263,8 @@ function KidDetail({ kid, onBack }) {
       setBalance(k.balance)
       setCurrentRate(k.interest_rate)
       setNewRate(String(k.interest_rate))
+      setCurrentCode(k.kid_access_code || '')
+      setNewCode(k.kid_access_code || '')
     }
     const { data: txs } = await supabase
       .from('transactions')
@@ -273,6 +295,21 @@ function KidDetail({ kid, onBack }) {
     await supabase.from('kids').update({ interest_rate: Number(newRate) }).eq('id', kid.id)
     setCurrentRate(Number(newRate))
     setEditingRate(false)
+  }
+
+  async function saveCode(e) {
+    e.preventDefault()
+    setCodeError('')
+    const trimmed = newCode.trim().toUpperCase()
+    if (!trimmed) { setCodeError('Code cannot be empty.'); return }
+    const { error } = await supabase.from('kids').update({ kid_access_code: trimmed }).eq('id', kid.id)
+    if (error) {
+      setCodeError(error.message.includes('unique') ? 'That code is already in use.' : error.message)
+      return
+    }
+    setCurrentCode(trimmed)
+    setNewCode(trimmed)
+    setEditingCode(false)
   }
 
   function startEditTx(tx) {
@@ -309,6 +346,7 @@ function KidDetail({ kid, onBack }) {
       <h2>{kid.name}</h2>
       <div className="big-balance">${Number(balance).toFixed(2)}</div>
 
+      {/* Interest rate */}
       {editingRate ? (
         <form onSubmit={saveInterestRate} className="rate-edit-form">
           <input
@@ -328,9 +366,31 @@ function KidDetail({ kid, onBack }) {
       ) : (
         <p className="muted">
           {currentRate}% annual interest{' '}
-          <button className="edit-inline-btn" onClick={() => setEditingRate(true)}>
-            Edit
+          <button className="edit-inline-btn" onClick={() => setEditingRate(true)}>Edit</button>
+        </p>
+      )}
+
+      {/* View code */}
+      {editingCode ? (
+        <form onSubmit={saveCode} className="rate-edit-form">
+          <span>View code:</span>
+          <input
+            value={newCode}
+            onChange={(e) => setNewCode(normalizeCode(e.target.value))}
+            style={{ width: '120px' }}
+            autoCapitalize="characters"
+            placeholder="e.g. EMMA"
+          />
+          <button type="submit" className="inline-btn">Save</button>
+          <button type="button" className="inline-btn secondary" onClick={() => { setEditingCode(false); setNewCode(currentCode); setCodeError('') }}>
+            Cancel
           </button>
+          {codeError && <span className="error">{codeError}</span>}
+        </form>
+      ) : (
+        <p className="muted">
+          View code: <strong style={{ color: '#444', letterSpacing: '1px' }}>{currentCode}</strong>{' '}
+          <button className="edit-inline-btn" onClick={() => setEditingCode(true)}>Edit</button>
         </p>
       )}
 
@@ -473,7 +533,7 @@ function KidView({ onBack }) {
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            placeholder="e.g. AB12CD"
+            placeholder="e.g. EMMA"
             required
             autoCapitalize="characters"
           />
