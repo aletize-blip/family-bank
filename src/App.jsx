@@ -23,7 +23,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>🏦 Family Bank</h1>
+        <h1>🏦 Bank of Letize</h1>
         {session && mode === 'parent' && (
           <button className="link" onClick={() => supabase.auth.signOut()}>
             Sign out
